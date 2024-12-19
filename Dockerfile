@@ -1,6 +1,7 @@
 FROM arm32v7/python:3.9-slim-bullseye
 
 # Install required tools for key operations
+# Mount caches from host to accelerate the build
 RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
     --mount=target=/var/cache/apt,type=cache,sharing=locked \
     apt update && apt install -y --no-install-recommends gnupg dirmngr curl apt-utils && \
@@ -30,4 +31,4 @@ ENV PYTHONPATH="/usr/lib/python3/dist-packages"
 WORKDIR /app
 COPY app.py /app/
 
-CMD ["gunicorn", "-b", "0.0.0.0:8011", "--workers", "1", "--worker-class", "gevent", "--timeout", "10", "app:app"]
+CMD ["python", "-m", "gunicorn", "-b", "0.0.0.0:8011", "--workers", "1", "--worker-class", "gevent", "app:app"]
