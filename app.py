@@ -64,7 +64,7 @@ def generate_frames():
 
 @app.route('/')
 def index():
-    return "<html><body><img src='/stream'></body></html>"
+    return "<html><body><img style='width: 100%; height: auto;' src='/stream'></body></html>"
 
 @app.route('/stream')
 def stream():
