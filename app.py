@@ -3,6 +3,7 @@ from picamera2 import Picamera2
 from PIL import Image, ImageDraw, ImageFont
 import io, threading, time, logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # Logging configuration set at the very beginning
 logging.basicConfig(
@@ -61,7 +62,8 @@ def frame_updater():
 
             # Draw the timestamp
             draw = ImageDraw.Draw(img)
-            timestamp = datetime.now().strftime("%H:%M:%S")
+            timezone = ZoneInfo('Europe/Berlin')
+            timestamp = datetime.now(timezone).strftime("%H:%M:%S")
             text_width, text_height = draw.textsize(timestamp, font=font)
 
             # Position: bottom right with some padding
