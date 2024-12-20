@@ -21,6 +21,7 @@ RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
         python3-gevent \
         python3-flask \
         python3-gunicorn \
+        fonts-dejavu \
     && rm -rf /var/lib/apt/lists/*
 
 # enable Python to find the packages installed by apt
