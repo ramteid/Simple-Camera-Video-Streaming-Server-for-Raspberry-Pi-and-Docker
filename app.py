@@ -1,4 +1,4 @@
-from flask import Flask, Response, stream_with_context
+from flask import Flask, Response
 from picamera2 import Picamera2
 from PIL import Image, ImageDraw, ImageFont
 import io, threading, time, logging
@@ -133,7 +133,7 @@ def index():
 
 @app.route('/stream')
 def stream():
-    return Response(stream_with_context(generate_frames()), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 # Start the frame updater thread
 frame_thread = threading.Thread(target=frame_updater, daemon=True)
