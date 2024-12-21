@@ -14,16 +14,12 @@ logging.basicConfig(
 # Configuration parameters
 IMAGE_SIZE_X = 640
 IMAGE_SIZE_Y = 480
+SLEEP_TIME_SECONDS = 0.04  # approximately 25 FPS
 
 app = Flask(__name__)
 latest_frame = None
 frame_lock = threading.Lock()
-active_clients = 0
-clients_lock = threading.Lock()
 stop_thread = False
-
-# Event to control the frame updater
-update_event = threading.Event()
 
 # Load the font (ensure the font path is correct)
 font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -46,11 +42,6 @@ def frame_updater():
     picam = None
 
     while not stop_thread:
-        if not update_event.is_set():
-            # No active client, wait until a client connects
-            time.sleep(0.1)
-            continue
-
         try:
             if picam is None:
                 picam = initialize_camera()
@@ -94,7 +85,7 @@ def frame_updater():
                 latest_frame = jpeg
 
             # Reduce CPU load
-            time.sleep(0.07)  # Approximately 14 FPS
+            time.sleep(SLEEP_TIME_SECONDS)
 
         except Exception as e:
             logging.error(f"Camera error: {e}")
@@ -116,29 +107,12 @@ def frame_updater():
             pass
 
 def generate_frames():
-    global active_clients
-
-    with clients_lock:
-        active_clients += 1
-        if active_clients == 1:
-            update_event.set()
-        logging.info(f"Client connected. Active clients: {active_clients}")
-
-    try:
-        while True:
-            with frame_lock:
-                if latest_frame is not None:
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + latest_frame + b'\r\n')
-            time.sleep(0.07)
-    except GeneratorExit:
-        pass
-    finally:
-        with clients_lock:
-            active_clients -= 1
-            logging.info(f"Client disconnected. Active clients: {active_clients}")
-            if active_clients == 0:
-                update_event.clear()
+    while True:
+        with frame_lock:
+            if latest_frame is not None:
+                yield (b'--frame\r\n'
+                        b'Content-Type: image/jpeg\r\n\r\n' + latest_frame + b'\r\n')
+        time.sleep(SLEEP_TIME_SECONDS)
 
 @app.route('/')
 def index():
