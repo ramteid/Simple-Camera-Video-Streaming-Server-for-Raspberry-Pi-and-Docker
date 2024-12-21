@@ -14,12 +14,14 @@ logging.basicConfig(
 # Configuration parameters
 IMAGE_SIZE_X = 640
 IMAGE_SIZE_Y = 480
-SLEEP_TIME_SECONDS = 0.04  # approximately 25 FPS
+SLEEP_TIME_SECONDS = 0.04  # reduces CPU load (~ 25 FPS)
+TIMEZONE = 'Europe/Berlin'
 
 app = Flask(__name__)
 latest_frame = None
 frame_lock = threading.Lock()
-stop_thread = False
+stop_event = threading.Event()
+jpeg_buffer = io.BytesIO()
 
 # Load the font (ensure the font path is correct)
 font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -41,7 +43,7 @@ def frame_updater():
     global latest_frame, stop_thread
     picam = None
 
-    while not stop_thread:
+    while not stop_event.is_set():
         try:
             if picam is None:
                 picam = initialize_camera()
@@ -51,35 +53,14 @@ def frame_updater():
             frame = picam.capture_array()
             img = Image.fromarray(frame)
 
-            # Draw the timestamp
-            draw = ImageDraw.Draw(img)
-            timezone = ZoneInfo('Europe/Berlin')
-            timestamp = datetime.now(timezone).strftime("%H:%M:%S")
-            text_width, text_height = draw.textsize(timestamp, font=font)
-
-            # Position: bottom right with some padding
-            padding = 10
-            x = IMAGE_SIZE_X - text_width - padding
-            y = IMAGE_SIZE_Y - text_height - padding
-
-            # Optional: Add a semi-transparent rectangle behind the text for better visibility
-            rectangle_padding = 5
-            rectangle_x0 = x - rectangle_padding
-            rectangle_y0 = y - rectangle_padding
-            rectangle_x1 = x + text_width + rectangle_padding
-            rectangle_y1 = y + text_height + rectangle_padding
-            draw.rectangle(
-                [rectangle_x0, rectangle_y0, rectangle_x1, rectangle_y1],
-                fill=(0, 0, 0, 128)  # Semi-transparent black
-            )
-
-            # Draw the text
-            draw.text((x, y), timestamp, font=font, fill=(255, 255, 255))
+            # Display the current time with seconds so you can see whether the stream has stopped
+            draw_timestamp(img)
 
             # Convert back to JPEG
-            buf = io.BytesIO()
-            img.save(buf, format='JPEG')
-            jpeg = buf.getvalue()
+            jpeg_buffer.seek(0)
+            img.save(jpeg_buffer, format='JPEG', quality=90, optimize=True)
+            jpeg_buffer.truncate()
+            jpeg = jpeg_buffer.getvalue()
 
             with frame_lock:
                 latest_frame = jpeg
@@ -106,6 +87,32 @@ def frame_updater():
         except:
             pass
 
+def draw_timestamp(img):
+    # Draw the timestamp
+    draw = ImageDraw.Draw(img)
+    timezone = ZoneInfo(TIMEZONE)
+    timestamp = datetime.now(timezone).strftime("%H:%M:%S")
+    text_width, text_height = draw.textsize(timestamp, font=font)
+
+    # Position: bottom right with some padding
+    padding = 10
+    x = IMAGE_SIZE_X - text_width - padding
+    y = IMAGE_SIZE_Y - text_height - padding
+
+    # Optional: Add a semi-transparent rectangle behind the text for better visibility
+    rectangle_padding = 5
+    rectangle_x0 = x - rectangle_padding
+    rectangle_y0 = y - rectangle_padding
+    rectangle_x1 = x + text_width + rectangle_padding
+    rectangle_y1 = y + text_height + rectangle_padding
+    draw.rectangle(
+        [rectangle_x0, rectangle_y0, rectangle_x1, rectangle_y1],
+        fill=(0, 0, 0, 128)  # Semi-transparent black
+    )
+
+    # Draw the text
+    draw.text((x, y), timestamp, font=font, fill=(255, 255, 255))
+
 def generate_frames():
     while True:
         with frame_lock:
@@ -116,7 +123,13 @@ def generate_frames():
 
 @app.route('/')
 def index():
-    return "<html><body><img style='width: 100%; height: auto;' src='/stream'></body></html>"
+    return """
+        <html>
+        <body style="margin: 0; overflow: hidden;">
+            <img style="max-width: 100vw; max-height: 100vh; width: auto; height: auto; display: block; margin: auto;" src="/stream">
+        </body>
+        </html>
+        """
 
 @app.route('/stream')
 def stream():
@@ -131,5 +144,5 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=8011)
     finally:
         # Stop the thread on shutdown
-        stop_thread = True
+        stop_event.set()
         frame_thread.join()
