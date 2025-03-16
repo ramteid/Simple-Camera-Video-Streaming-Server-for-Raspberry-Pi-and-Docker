@@ -5,7 +5,7 @@ import io, threading, time, logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-# Logging configuration set at the very beginning
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s'
@@ -18,9 +18,17 @@ SLEEP_TIME_SECONDS = 0.04  # reduces CPU load (~ 25 FPS)
 TIMEZONE = 'Europe/Berlin'
 
 app = Flask(__name__)
+
+# Globals for camera data
 latest_frame = None
 frame_lock = threading.Lock()
 stop_event = threading.Event()
+
+# We'll create the thread **lazily** (on first request) so that
+# it happens inside the actual Gunicorn worker context.
+frame_thread = None
+
+# Buffer for JPEG conversion
 jpeg_buffer = io.BytesIO()
 
 # Load the font (ensure the font path is correct)
@@ -33,6 +41,7 @@ except IOError:
     font = ImageFont.load_default()
 
 def initialize_camera():
+    """Initialize and start the camera."""
     picam = Picamera2()
     config = picam.create_still_configuration(main={"size": (IMAGE_SIZE_X, IMAGE_SIZE_Y)})
     picam.configure(config)
@@ -40,7 +49,8 @@ def initialize_camera():
     return picam
 
 def frame_updater():
-    global latest_frame, stop_thread
+    """Thread that continuously grabs frames and stores the latest JPEG."""
+    global latest_frame
     picam = None
 
     while not stop_event.is_set():
@@ -53,10 +63,10 @@ def frame_updater():
             frame = picam.capture_array()
             img = Image.fromarray(frame)
 
-            # Display the current time with seconds so you can see whether the stream has stopped
+            # Draw timestamp
             draw_timestamp(img)
 
-            # Convert back to JPEG
+            # Convert to JPEG (re-use the buffer)
             jpeg_buffer.seek(0)
             img.save(jpeg_buffer, format='JPEG', quality=90, optimize=True)
             jpeg_buffer.truncate()
@@ -65,7 +75,6 @@ def frame_updater():
             with frame_lock:
                 latest_frame = jpeg
 
-            # Reduce CPU load
             time.sleep(SLEEP_TIME_SECONDS)
 
         except Exception as e:
@@ -74,21 +83,33 @@ def frame_updater():
             if picam:
                 try:
                     picam.stop()
-                except:
+                except Exception:
                     pass
                 picam = None
-            logging.info("Reinitializing camera...")
+            logging.info("Reinitializing camera in 2 seconds...")
             time.sleep(2)
 
     # Release resources when stopping the thread
     if picam:
         try:
             picam.stop()
-        except:
+        except Exception:
             pass
 
+def draw_spinner(draw, center_x, center_y, radius, angle, color=(255, 255, 255)):
+    """Draws a spinner at the specified location."""
+    start_angle = angle
+    end_angle = angle + 270  # Spinner arc length
+    draw.arc(
+        [center_x - radius, center_y - radius, center_x + radius, center_y + radius],
+        start=start_angle,
+        end=end_angle,
+        fill=color,
+        width=3
+    )
+
 def draw_timestamp(img):
-    # Draw the timestamp
+    """Draws a timestamp and spinner in the bottom-right corner of the image."""
     draw = ImageDraw.Draw(img)
     timezone = ZoneInfo(TIMEZONE)
     timestamp = datetime.now(timezone).strftime("%H:%M:%S")
@@ -99,7 +120,15 @@ def draw_timestamp(img):
     x = IMAGE_SIZE_X - text_width - padding
     y = IMAGE_SIZE_Y - text_height - padding
 
-    # Optional: Add a semi-transparent rectangle behind the text for better visibility
+    # Draw spinner above the timestamp
+    spinner_radius = text_height // 2
+    spinner_center_x = x + text_width // 2
+    spinner_center_y = y - spinner_radius - padding
+    current_time = time.time()
+    spinner_angle = (current_time * 360) % 360
+    draw_spinner(draw, spinner_center_x, spinner_center_y, spinner_radius, spinner_angle)
+
+    # Optional: semi-transparent rectangle
     rectangle_padding = 5
     rectangle_x0 = x - rectangle_padding
     rectangle_y0 = y - rectangle_padding
@@ -107,18 +136,18 @@ def draw_timestamp(img):
     rectangle_y1 = y + text_height + rectangle_padding
     draw.rectangle(
         [rectangle_x0, rectangle_y0, rectangle_x1, rectangle_y1],
-        fill=(0, 0, 0, 128)  # Semi-transparent black
+        fill=(0, 0, 0, 128)
     )
 
-    # Draw the text
     draw.text((x, y), timestamp, font=font, fill=(255, 255, 255))
 
 def generate_frames():
+    """Generator function for streaming frames."""
     while True:
         with frame_lock:
             if latest_frame is not None:
                 yield (b'--frame\r\n'
-                        b'Content-Type: image/jpeg\r\n\r\n' + latest_frame + b'\r\n')
+                       b'Content-Type: image/jpeg\r\n\r\n' + latest_frame + b'\r\n')
         time.sleep(SLEEP_TIME_SECONDS)
 
 @app.route('/')
@@ -135,14 +164,30 @@ def index():
 def stream():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-# Start the frame updater thread
-frame_thread = threading.Thread(target=frame_updater, daemon=True)
-frame_thread.start()
+def start_frame_thread_once():
+    """Start the frame-updater thread if not already running."""
+    global frame_thread
+    # Make sure we only start the thread once
+    if frame_thread is None or not frame_thread.is_alive():
+        logging.info("Starting frame_updater thread.")
+        frame_thread = threading.Thread(target=frame_updater, daemon=True)
+        frame_thread.start()
+
+@app.before_first_request
+def initialize_on_first_request():
+    """
+    Lazy initialization hook:
+    This will run once per worker process (on the first request),
+    ensuring the camera thread is started in the *worker*, not the master.
+    """
+    start_frame_thread_once()
 
 if __name__ == '__main__':
     try:
+        # Running in plain Flask mode for local debug
         app.run(host='0.0.0.0', port=8011)
     finally:
         # Stop the thread on shutdown
         stop_event.set()
-        frame_thread.join()
+        if frame_thread:
+            frame_thread.join()
