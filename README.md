@@ -12,5 +12,4 @@ Made for and tested with Raspberry Pi 3B+ with OV5647 camera on Raspberry Pi OS 
 - Or access the stream directly with an app like VNC: `http://YOURPI:8011/stream`
 
 ## Hints
-- I'm using a older Python Docker image (3.9) because the Python packages I found are mostly older, too.
 - The default video size is 640x480. You can adjust it in `app.py`. Get available resolutions with `libcamera-hello --list-cameras`.
