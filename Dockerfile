@@ -30,4 +30,5 @@ ENV PYTHONPATH="/usr/lib/python3/dist-packages"
 WORKDIR /app
 COPY app.py /app/
 
-CMD ["python", "-m", "gunicorn", "-b", "0.0.0.0:8011", "--workers", "1", "--worker-class", "gevent", "app:app"]
+CMD ["python", "-m", "gunicorn", "-b", "0.0.0.0:8011", "--workers", "1", "--worker-class", "gevent", "app:app", "--timeout", "0"]
+#CMD ["python", "-m", "gunicorn", "-b", "0.0.0.0:8011", "--workers", "1", "--worker-class", "sync", "app:app"]
