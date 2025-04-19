@@ -8,6 +8,6 @@ services:
     volumes:
       - /run/udev:/run/udev:ro
     ports:
-      - "8011:8011"
+      - "8554:8554"  # RTSP port
     restart: always
     privileged: true
