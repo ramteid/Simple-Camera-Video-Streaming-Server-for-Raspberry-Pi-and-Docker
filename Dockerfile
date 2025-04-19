@@ -18,17 +18,16 @@ RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked \
         python3-picamera2 \
         python3-pil \
         python3-numpy \
-        python3-gevent \
-        python3-flask \
-        python3-gunicorn \
         fonts-dejavu \
     && rm -rf /var/lib/apt/lists/*
 
 # enable Python to find the packages installed by apt
 ENV PYTHONPATH="/usr/lib/python3/dist-packages"
 
+# Install FastAPI and Uvicorn
+RUN pip install --no-cache-dir fastapi uvicorn
+
 WORKDIR /app
 COPY app.py /app/
 
-CMD ["python", "-m", "gunicorn", "-b", "0.0.0.0:8011", "--workers", "1", "--worker-class", "gevent", "app:app", "--timeout", "0"]
-#CMD ["python", "-m", "gunicorn", "-b", "0.0.0.0:8011", "--workers", "1", "--worker-class", "sync", "app:app"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8011", "--timeout-keep-alive", "0"]

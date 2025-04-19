@@ -1,9 +1,11 @@
-from flask import Flask, Response
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from picamera2 import Picamera2
 from PIL import Image, ImageDraw, ImageFont
-import io, threading, time, logging
+import io, asyncio, logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import time
 
 # Logging configuration
 logging.basicConfig(
@@ -17,16 +19,16 @@ IMAGE_SIZE_Y = 480
 SLEEP_TIME_SECONDS = 0.04  # reduces CPU load (~ 25 FPS)
 TIMEZONE = 'Europe/Berlin'
 
-app = Flask(__name__)
+app = FastAPI()
 
 # Globals for camera data
 latest_frame = None
-frame_lock = threading.Lock()
-stop_event = threading.Event()
+frame_lock = asyncio.Lock()
+stop_event = asyncio.Event()
 
-# We'll create the thread **lazily** (on first request) so that
+# We'll create the task **lazily** (on first request) so that
 # it happens inside the actual Gunicorn worker context.
-frame_thread = None
+frame_task = None
 
 # Buffer for JPEG conversion
 jpeg_buffer = io.BytesIO()
@@ -48,8 +50,8 @@ def initialize_camera():
     picam.start()
     return picam
 
-def frame_updater():
-    """Thread that continuously grabs frames and stores the latest JPEG."""
+async def frame_updater():
+    """Async task that continuously grabs frames and stores the latest JPEG."""
     global latest_frame
     picam = None
 
@@ -72,10 +74,10 @@ def frame_updater():
             jpeg_buffer.truncate()
             jpeg = jpeg_buffer.getvalue()
 
-            with frame_lock:
+            async with frame_lock:
                 latest_frame = jpeg
 
-            time.sleep(SLEEP_TIME_SECONDS)
+            await asyncio.sleep(SLEEP_TIME_SECONDS)
 
         except Exception as e:
             logging.error(f"Camera error: {e}")
@@ -83,16 +85,24 @@ def frame_updater():
             if picam:
                 try:
                     picam.stop()
-                except Exception:
-                    pass
+                except Exception as stop_exc:
+                    logging.warning(f"Error stopping camera: {stop_exc}")
+                try:
+                    picam.close()
+                except Exception as close_exc:
+                    logging.warning(f"Error closing camera: {close_exc}")
                 picam = None
             logging.info("Reinitializing camera in 2 seconds...")
-            time.sleep(2)
+            await asyncio.sleep(2)
 
-    # Release resources when stopping the thread
+    # Release resources when stopping the task
     if picam:
         try:
             picam.stop()
+        except Exception:
+            pass
+        try:
+            picam.close()
         except Exception:
             pass
 
@@ -121,7 +131,7 @@ def draw_timestamp(img):
     y = IMAGE_SIZE_Y - text_height - padding
 
     # Draw spinner above the timestamp
-    spinner_radius = text_height // 2
+    spinner_radius = int(text_height * 1.5)  # 3 times larger than original
     spinner_center_x = x + text_width // 2
     spinner_center_y = y - spinner_radius - padding
     current_time = time.time()
@@ -141,17 +151,17 @@ def draw_timestamp(img):
 
     draw.text((x, y), timestamp, font=font, fill=(255, 255, 255))
 
-def generate_frames():
-    """Generator function for streaming frames."""
+async def generate_frames():
+    """Async generator function for streaming frames."""
     while True:
-        with frame_lock:
+        async with frame_lock:
             if latest_frame is not None:
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + latest_frame + b'\r\n')
-        time.sleep(SLEEP_TIME_SECONDS)
+        await asyncio.sleep(SLEEP_TIME_SECONDS)
 
-@app.route('/')
-def index():
+@app.get("/")
+async def index():
     return """
         <html>
         <body style="margin: 0; overflow: hidden;">
@@ -160,34 +170,28 @@ def index():
         </html>
         """
 
-@app.route('/stream')
-def stream():
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+@app.get("/stream")
+async def stream():
+    return StreamingResponse(generate_frames(), media_type='multipart/x-mixed-replace; boundary=frame')
 
-def start_frame_thread_once():
-    """Start the frame-updater thread if not already running."""
-    global frame_thread
-    # Make sure we only start the thread once
-    if frame_thread is None or not frame_thread.is_alive():
-        logging.info("Starting frame_updater thread.")
-        frame_thread = threading.Thread(target=frame_updater, daemon=True)
-        frame_thread.start()
+def start_frame_task_once():
+    """Start the frame-updater async task if not already running."""
+    global frame_task
+    # Make sure we only start the task once
+    if frame_task is None or frame_task.done():
+        logging.info("Starting frame_updater async task.")
+        loop = asyncio.get_event_loop()
+        frame_task = loop.create_task(frame_updater())
 
-@app.before_first_request
-def initialize_on_first_request():
+@app.on_event("startup")
+async def initialize_on_first_request():
     """
     Lazy initialization hook:
     This will run once per worker process (on the first request),
-    ensuring the camera thread is started in the *worker*, not the master.
+    ensuring the camera task is started in the *worker*, not the master.
     """
-    start_frame_thread_once()
+    start_frame_task_once()
 
-if __name__ == '__main__':
-    try:
-        # Running in plain Flask mode for local debug
-        app.run(host='0.0.0.0', port=8011)
-    finally:
-        # Stop the thread on shutdown
-        stop_event.set()
-        if frame_thread:
-            frame_thread.join()
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app:app", host="0.0.0.0", port=8011, reload=True)
