@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 from picamera2 import Picamera2
 from PIL import Image, ImageDraw, ImageFont
 import io, asyncio, logging
@@ -160,7 +160,7 @@ async def generate_frames():
                        b'Content-Type: image/jpeg\r\n\r\n' + latest_frame + b'\r\n')
         await asyncio.sleep(SLEEP_TIME_SECONDS)
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def index():
     return """
         <html>
