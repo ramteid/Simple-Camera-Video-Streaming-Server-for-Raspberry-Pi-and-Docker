@@ -7,7 +7,16 @@ services:
       dockerfile: Dockerfile
     volumes:
       - /run/udev:/run/udev:ro
-    ports:
-      - "8554:8554"  # RTSP port
+    ports: []  # Remove port mapping as rtsp-server will handle this
     restart: always
     privileged: true
+    depends_on:
+      - rtsp-server
+
+  rtsp-server:
+    image: aler9/rtsp-simple-server:v1.12.2
+    ports:
+      - "8554:8554"  # RTSP control port (TCP)
+    volumes:
+      - ./rtsp-simple-server.yml:/rtsp-simple-server.yml
+    restart: always

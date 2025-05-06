@@ -1,5 +1,19 @@
 import sys
-from picamera2 import Picamera2
+import builtins
+
+# Redirect print statements to stderr because stdout is used for image data
+_original_print = builtins.print
+def _print(*args, **kwargs):
+    if kwargs.get("file", sys.stdout) == sys.stdout:
+        kwargs["file"] = sys.stderr
+    _original_print(*args, **kwargs)
+builtins.print = _print
+
+try:
+    from picamera2 import Picamera2
+except ModuleNotFoundError as e:
+    print(f"Module Import Error: {e}. Please install the required package.", file=sys.stderr)
+    sys.exit(1)
 from PIL import Image, ImageDraw, ImageFont
 import io, asyncio, logging
 from datetime import datetime
@@ -9,14 +23,17 @@ import time
 # Logging configuration
 logging.basicConfig(
     level=logging.INFO,
-    format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s'
+    format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s',
+    stream=sys.stderr
 )
 
 # Configuration parameters
 IMAGE_SIZE_X = 640
 IMAGE_SIZE_Y = 480
-SLEEP_TIME_SECONDS = 0.04  # reduces CPU load (~ 25 FPS)
+TARGET_FPS = 30
+TARGET_FRAME_TIME = 1.0 / TARGET_FPS
 TIMEZONE = 'Europe/Berlin'
+timezone = ZoneInfo(TIMEZONE)
 
 # Buffer for JPEG conversion
 jpeg_buffer = io.BytesIO()
@@ -39,79 +56,67 @@ def initialize_camera():
     return picam
 
 def draw_spinner(draw, center_x, center_y, radius, angle, color=(255, 255, 255)):
-    """Draws a spinner at the specified location."""
-    start_angle = angle
-    end_angle = angle + 270  # Spinner arc length
-    draw.arc(
-        [center_x - radius, center_y - radius, center_x + radius, center_y + radius],
-        start=start_angle,
-        end=end_angle,
-        fill=color,
-        width=3
-    )
+    spinner_arc = 270  # constant spinner arc angle
+    bbox = [center_x - radius, center_y - radius, center_x + radius, center_y + radius]
+    draw.arc(bbox, start=angle, end=angle + spinner_arc, fill=color, width=3)
 
 def draw_timestamp(img):
     """Draws a timestamp and spinner in the bottom-right corner of the image."""
     draw = ImageDraw.Draw(img)
-    timezone = ZoneInfo(TIMEZONE)
     timestamp = datetime.now(timezone).strftime("%H:%M:%S")
-    text_width, text_height = draw.textsize(timestamp, font=font)
-
-    # Position: bottom right with some padding
     padding = 10
+    # Use textbbox for precise measurement of text dimensions
+    text_bbox = draw.textbbox((0, 0), timestamp, font=font)
+    text_width = text_bbox[2] - text_bbox[0]
+    text_height = text_bbox[3] - text_bbox[1]
     x = IMAGE_SIZE_X - text_width - padding
     y = IMAGE_SIZE_Y - text_height - padding
 
-    # Draw spinner above the timestamp
-    spinner_radius = int(text_height * 1.5)  # 3 times larger than original
-    spinner_center_x = x + text_width // 2
+    spinner_radius = int(text_height * 1.5)
+    spinner_center_x = x + text_width / 2  # more precise center (using float)
     spinner_center_y = y - spinner_radius - padding
-    current_time = time.time()
-    spinner_angle = (current_time * 360) % 360
+    spinner_angle = (time.time() * 360) % 360
     draw_spinner(draw, spinner_center_x, spinner_center_y, spinner_radius, spinner_angle)
 
-    # Optional: semi-transparent rectangle
-    rectangle_padding = 5
-    rectangle_x0 = x - rectangle_padding
-    rectangle_y0 = y - rectangle_padding
-    rectangle_x1 = x + text_width + rectangle_padding
-    rectangle_y1 = y + text_height + rectangle_padding
-    draw.rectangle(
-        [rectangle_x0, rectangle_y0, rectangle_x1, rectangle_y1],
-        fill=(0, 0, 0, 128)
-    )
-
+    # Draw a semi-transparent rectangle using the precise text dimensions
+    rect = [x - 5, y - 5, x + text_width + 5, y + text_height + 5]
+    draw.rectangle(rect, fill=(0, 0, 0, 128))
     draw.text((x, y), timestamp, font=font, fill=(255, 255, 255))
 
-def main():
+async def main():
     picam = None
+    loop = asyncio.get_event_loop()
     while True:
+        start_time = time.perf_counter()
         try:
             if picam is None:
                 picam = initialize_camera()
-            frame = picam.capture_array()
+            frame = await loop.run_in_executor(None, picam.capture_array)
             img = Image.fromarray(frame)
             draw_timestamp(img)
             jpeg_buffer.seek(0)
-            img.save(jpeg_buffer, format='JPEG', quality=90, optimize=True)
+            img.save(jpeg_buffer, format='JPEG', quality=75, optimize=False)
             jpeg_buffer.truncate()
             jpeg = jpeg_buffer.getvalue()
             sys.stdout.buffer.write(jpeg)
             sys.stdout.buffer.flush()
-            time.sleep(SLEEP_TIME_SECONDS)
         except Exception as e:
             logging.error(f"Camera error: {e}")
             if picam:
                 try:
-                    picam.stop()
+                    await loop.run_in_executor(None, picam.stop)
                 except Exception:
                     pass
                 try:
-                    picam.close()
+                    await loop.run_in_executor(None, picam.close)
                 except Exception:
                     pass
                 picam = None
-            time.sleep(2)
+            await asyncio.sleep(2)
+        finally:
+            elapsed = time.perf_counter() - start_time
+            sleep_time = max(0, TARGET_FRAME_TIME - elapsed)
+            await asyncio.sleep(sleep_time)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
